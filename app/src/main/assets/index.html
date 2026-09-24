@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>V8 ECU DASH</title>
+
+<style>
+*{box-sizing:border-box}
+body{
+ margin:0;background:#05070a;color:#eee;
+ font-family:Arial,sans-serif;
+ user-select:none
+}
+header{
+ padding:12px;text-align:center;
+ font-weight:bold;font-size:20px;
+ border-bottom:1px solid #222
+}
+#status{text-align:center;padding:7px;color:#0f0;font-size:13px}
+.grid{
+ display:grid;grid-template-columns:1fr 1fr;
+ gap:8px;padding:8px
+}
+.card{
+ background:#0d1117;border:1px solid #252b33;
+ border-radius:12px;padding:12px;text-align:center
+}
+.big{font-size:43px;font-weight:bold}
+.label{font-size:12px;color:#888}
+.wide{grid-column:1/-1}
+button{
+ background:#151b22;color:white;border:1px solid #39424d;
+ border-radius:9px;padding:10px;margin:3px;
+ font-weight:bold
+}
+button:active{transform:scale(.96)}
+input{
+ background:#080b0f;color:white;border:1px solid #39424d;
+ padding:9px;border-radius:8px;width:90px
+}
+#graph{
+ width:100%;height:150px;background:#080b0f;
+ border-radius:10px
+}
+.red{color:#ff4444}
+.green{color:#35ff75}
+.yellow{color:#ffd43b}
+.small{font-size:14px}
+</style>
+</head>
+
+<body>
+
+<header>V8 ECU DASH ⚡</header>
+<div id="status">GPS INITIALIZING...</div>
+
+<div class="grid">
+
+<div class="card wide">
+ <div class="label">GPS SPEED</div>
+ <div id="speed" class="big">0.0</div>
+ <div class="label">km/h</div>
+</div>
+
+<div class="card">
+ <div class="label">MAX</div>
+ <div id="max" class="big">0.0</div>
+</div>
+
+<div class="card">
+ <div class="label">AVG</div>
+ <div id="avg" class="big">0.0</div>
+</div>
+
+<div class="card">
+ <div class="label">DISTANCE</div>
+ <div id="dist">0.00 km</div>
+</div>
+
+<div class="card">
+ <div class="label">HEADING</div>
+ <div id="heading">---</div>
+</div>
+
+<div class="card">
+ <div class="label">GPS ACCURACY</div>
+ <div id="acc">---</div>
+</div>
+
+<div class="card">
+ <div class="label">BATTERY</div>
+ <div id="bat">---</div>
+</div>
+
+<div class="card">
+ <div class="label">ACCELERATION</div>
+ <div id="accel">0.00 m/s²</div>
+</div>
+
+<div class="card wide">
+ <div class="label">PERFORMANCE TIMER</div>
+ <button onclick="setTarget(201)">201 M</button>
+ <button onclick="setTarget(500)">500 M</button>
+ <button onclick="setTarget(1000)">1 KM</button>
+ <br>
+ <button onclick="arm()">ARM TIMER</button>
+ <button onclick="clearRun()">CLEAR</button>
+ <div id="target">TARGET: ---</div>
+ <div id="timer" class="big">0.000</div>
+ <div id="timerState" class="small">IDLE</div>
+</div>
+
+<div class="card wide">
+ <div class="label">0–20 / 40 / 60 / 100 KM/H</div>
+ <div id="t20">20: ---</div>
+ <div id="t40">40: ---</div>
+ <div id="t60">60: ---</div>
+ <div id="t100">100: ---</div>
+</div>
+
+<div class="card wide">
+ <div class="label">LIVE SPEED GRAPH</div>
+ <canvas id="graph"></canvas>
+</div>
+
+<div class="card wide">
+ <div class="label">SPEEDOMETER CALIBRATION</div>
+ <input id="motorSpeed" type="number" step=".1" placeholder="Motor">
+ <button onclick="captureCalibration()">CAPTURE</button>
+ <div id="cal">GPS: --- | MOTOR: --- | Δ: ---</div>
+</div>
+
+<div class="card wide">
+ <div class="label">ECU STATUS</div>
+ <div id="ecu" class="yellow">ECU NOT CONNECTED</div>
+ <div class="small">
+ RPM: --- &nbsp; TPS: --- &nbsp; TEMP: ---
+ </div>
+</div>
+
+<div class="card wide">
+ <button onclick="resetAll()">RESET SESSION</button>
+ <button onclick="exportCSV()">EXPORT CSV</button>
+ <button onclick="fullscreen()">FULLSCREEN</button>
+</div>
+
+</div>
+
+<script>
+let speed=0,maxSpeed=0,totalDist=0;
+let lastLat=null,lastLon=null,lastTime=null;
+let speeds=[],points=[];
+let target=0,armed=false,running=false;
+let startDist=0,startTime=0;
+let times={20:null,40:null,60:null,100:null};
+let calib=[];
+
+const $=id=>document.getElementById(id);
+
+function hav(a,b,c,d){
+ const R=6371000;
+ const p=Math.PI/180;
+ const x=(c-a)*p;
+ const y=(d-b)*p;
+ const q=Math.sin(x/2)**2+
+ Math.cos(a*p)*Math.cos(c*p)*Math.sin(y/2)**2;
+ return R*2*Math.atan2(Math.sqrt(q),Math.sqrt(1-q));
+}
+
+function geo(pos){
+ const c=pos.coords;
+ const now=performance.now();
+
+ speed=Math.max(0,(c.speed||0)*3.6);
+
+ if(lastLat!==null){
+  const d=hav(lastLat,lastLon,c.latitude,c.longitude);
+  if(d<100) totalDist+=d;
+ }
+
+ lastLat=c.latitude;
+ lastLon=c.longitude;
+ lastTime=now;
+
+ maxSpeed=Math.max(maxSpeed,speed);
+ speeds.push(speed);
+ if(speeds.length>100) speeds.shift();
+
+ points.push({
+  t:new Date().toISOString(),
+  speed:speed,
+  lat:c.latitude,
+  lon:c.longitude,
+  acc:c.accuracy
+ });
+ if(points.length>3000)points.shift();
+
+ $("speed").textContent=speed.toFixed(1);
+ $("max").textContent=maxSpeed.toFixed(1);
+
+ const av=speeds.reduce((a,b)=>a+b,0)/speeds.length;
+ $("avg").textContent=av.toFixed(1);
+
+ $("dist").textContent=(totalDist/1000).toFixed(2)+" km";
+ $("acc").textContent=c.accuracy.toFixed(1)+" m";
+
+ if(c.heading!=null)
+  $("heading").textContent=c.heading.toFixed(0)+"°";
+
+ if(c.speed!=null){
+  const ms=c.speed;
+  $("accel").textContent=ms.toFixed(2)+" m/s";
+ }
+
+ if(armed && speed>2){
+  armed=false;
+  running=true;
+  startTime=performance.now();
+  startDist=totalDist;
+  $("timerState").textContent="RUNNING";
+ }
+
+ if(running){
+  const t=(performance.now()-startTime)/1000;
+  $("timer").textContent=t.toFixed(3);
+
+  if(target && totalDist-startDist>=target){
+   running=false;
+   $("timerState").textContent="FINISHED";
+   $("timer").textContent=t.toFixed(3);
+  }
+
+  if(times[20]===null&&speed>=20){
+   times[20]=t;$("t20").textContent="20: "+t.toFixed(3)+" s";
+  }
+  if(times[40]===null&&speed>=40){
+   times[40]=t;$("t40").textContent="40: "+t.toFixed(3)+" s";
+  }
+  if(times[60]===null&&speed>=60){
+   times[60]=t;$("t60").textContent="60: "+t.toFixed(3)+" s";
+  }
+  if(times[100]===null&&speed>=100){
+   times[100]=t;$("t100").textContent="100: "+t.toFixed(3)+" s";
+  }
+ }
+
+ draw();
+ $("status").textContent="GPS ACTIVE";
+}
+
+function gpsErr(e){
+ $("status").textContent="GPS ERROR: "+e.message;
+ $("status").className="red";
+}
+
+navigator.geolocation.watchPosition(
+ geo,gpsErr,
+ {enableHighAccuracy:true,maximumAge:500,timeout:5000}
+);
+
+function setTarget(x){
+ target=x;
+ $("target").textContent="TARGET: "+x+" M";
+}
+
+function arm(){
+ if(!target){
+  $("timerState").textContent="SELECT TARGET";
+  return;
+ }
+ armed=true;
+ running=false;
+ $("timerState").textContent="ARMED";
+}
+
+function clearRun(){
+ armed=false;
+ running=false;
+ $("timer").textContent="0.000";
+ $("timerState").textContent="IDLE";
+ times={20:null,40:null,60:null,100:null};
+ $("t20").textContent="20: ---";
+ $("t40").textContent="40: ---";
+ $("t60").textContent="60: ---";
+ $("t100").textContent="100: ---";
+}
+
+function captureCalibration(){
+ const m=parseFloat($("motorSpeed").value);
+ if(!isFinite(m))return;
+
+ const diff=speed-m;
+ const pct=m?diff/m*100:0;
+
+ calib.push({
+  gps:speed,
+  motor:m,
+  diff:diff,
+  pct:pct
+ });
+
+ $("cal").textContent=
+ "GPS: "+speed.toFixed(1)+
+ " | MOTOR: "+m.toFixed(1)+
+ " | Δ: "+diff.toFixed(1)+
+ " ("+pct.toFixed(1)+"%)";
+}
+
+function draw(){
+ const cv=$("graph"),ctx=cv.getContext("2d");
+ const w=cv.width=cv.clientWidth*devicePixelRatio;
+ const h=cv.height=cv.clientHeight*devicePixelRatio;
+
+ ctx.clearRect(0,0,w,h);
+ ctx.beginPath();
+
+ speeds.forEach((v,i)=>{
+  const x=i/(Math.max(1,speeds.length-1))*w;
+  const y=h-(Math.min(v,160)/160)*h;
+  i?ctx.lineTo(x,y):ctx.moveTo(x,y);
+ });
+
+ ctx.strokeStyle="#35ff75";
+ ctx.lineWidth=3;
+ ctx.stroke();
+}
+
+async function battery(){
+ try{
+  const b=await navigator.getBattery();
+  const up=()=> $("bat").textContent=Math.round(b.level*100)+"%";
+  up();
+  b.addEventListener("levelchange",up);
+ }catch{
+  $("bat").textContent="N/A";
+ }
+}
+battery();
+
+function exportCSV(){
+ let csv="time,speed_kmh,lat,lon,accuracy\n";
+ points.forEach(p=>{
+  csv+=`${p.t},${p.speed},${p.lat},${p.lon},${p.acc}\n`;
+ });
+
+ const blob=new Blob([csv],{type:"text/csv"});
+ const a=document.createElement("a");
+ a.href=URL.createObjectURL(blob);
+ a.download="V8_session.csv";
+ a.click();
+ URL.revokeObjectURL(a.href);
+}
+
+function resetAll(){
+ location.reload();
+}
+
+function fullscreen(){
+ document.documentElement.requestFullscreen?.();
+}
+  </script>
