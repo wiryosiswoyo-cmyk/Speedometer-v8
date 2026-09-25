@@ -16,4 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "V8_ECU_DASH"
 
-include(":App")
+include(":app")
